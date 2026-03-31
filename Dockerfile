@@ -1,25 +1,10 @@
-# ---- build stage ----
-FROM python:3.11-slim AS builder
-
-WORKDIR /app
-
-# Install build dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        gcc \
-        libffi-dev \
-    && rm -rf /var/lib/apt/lists/*
-
-COPY requirements.txt .
-RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
-
-
-# ---- runtime stage ----
 FROM python:3.11-slim
 
 WORKDIR /app
 
-# Copy installed packages from builder
-COPY --from=builder /install /usr/local
+# All packages in requirements.txt ship pre-built wheels — no gcc needed
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application source
 COPY config.py   ./
@@ -29,14 +14,12 @@ COPY analysis/   ./analysis/
 COPY backtest/   ./backtest/
 COPY monitor/    ./monitor/
 
-# Streamlit config: disable telemetry, set server options
+# Streamlit config
 RUN mkdir -p /root/.streamlit
 COPY .streamlit/config.toml /root/.streamlit/config.toml
 
-# Data volume mount point (watchlist.json lives here)
+# watchlist.json is stored in this volume
 VOLUME ["/app/data_store"]
-
-# Patch watchlist path to use the volume at runtime
 ENV WATCHLIST_DIR=/app/data_store
 
 EXPOSE 8501
