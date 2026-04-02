@@ -899,19 +899,16 @@ with TAB_MONITOR:
 
         col_test, col_send = st.columns(2)
         with col_test:
-            if st.button("🔌 测试连接", key="wc_test"):
-                if not wc_bot_id or not wc_secret or not wc_chatid:
-                    st.error("请填写 Bot ID、Secret 和 Chat ID。")
+            if st.button("🔌 测试认证", key="wc_test"):
+                if not wc_bot_id or not wc_secret:
+                    st.error("请填写 Bot ID 和 Secret。")
                 else:
                     with st.spinner("连接中…"):
-                        ok, err = wecom_bot.send_markdown(
-                            wc_bot_id, wc_secret, wc_chatid,
-                            "✅ **企业微信机器人连接测试成功！**\n> 来自「商品因子分析平台」",
-                        )
+                        ok, err = wecom_bot.test_auth(wc_bot_id, wc_secret)
                     if ok:
-                        st.success("测试消息已发送，请查看企业微信。")
+                        st.success("认证成功！Bot ID 和 Secret 有效，可填写 Chat ID 后推送消息。")
                     else:
-                        st.error(f"发送失败：{err}")
+                        st.error(f"认证失败：{err}")
 
         with col_send:
             if st.button("📤 推送信号", key="wc_send"):
