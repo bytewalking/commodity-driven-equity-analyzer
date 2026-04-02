@@ -38,32 +38,34 @@ def run(
         price: float = row["price"]
         z: float = row["zscore"]
 
-        # --- stop-loss check ---
         if position == 1:
             unrealized = (price - entry_price) / entry_price
-            if unrealized < stop_loss:
+
+            # --- exit: normal sell takes priority over stop-loss ---
+            if z > sell_threshold:
+                ret = (price - entry_price) / entry_price
+                cash = shares * price
+                shares = 0.0
+                position = 0
+                trades.append(_trade_record(date, "卖出", price, ret, z))
+                entry_price = 0.0
+
+            # --- stop-loss ---
+            elif unrealized < stop_loss:
                 cash = shares * price
                 shares = 0.0
                 position = 0
                 trades.append(_trade_record(date, "止损卖出", price, unrealized, z))
                 entry_price = 0.0
 
-        # --- entry ---
-        if position == 0 and z < buy_threshold:
+        # --- entry: not on the same bar as an exit ---
+        last_trade_date = trades[-1]["date"] if trades else None
+        if position == 0 and z < buy_threshold and last_trade_date != date:
             shares = cash / price
             cash = 0.0
             position = 1
             entry_price = price
             trades.append(_trade_record(date, "买入", price, 0.0, z))
-
-        # --- exit ---
-        elif position == 1 and z > sell_threshold:
-            ret = (price - entry_price) / entry_price
-            cash = shares * price
-            shares = 0.0
-            position = 0
-            trades.append(_trade_record(date, "卖出", price, ret, z))
-            entry_price = 0.0
 
         portfolio_values.append({"date": date, "value": cash + shares * price})
 

@@ -1,249 +1,205 @@
 # Commodity-driven Equity Analyzer
-### 商品因子驱动股票分析平台
 
-A quantitative research platform that discovers, measures, and monitors the statistical relationship between Chinese commodity futures prices and A-share equities. Users can rank stocks by commodity correlation, run z-score mean-reversion backtests, and receive daily trading signals via email — all through a browser-based UI.
+A Streamlit application for quantitative analysis, strategy backtesting, and monitoring of A-share stocks driven by commodity futures price factors.
 
----
-
-## Features
-
-| Module | Description |
-|--------|-------------|
-| **Stock Matching** | Ranks related A-shares by a composite score (correlation × volatility × z-score distance) |
-| **Factor Analysis** | Rolling correlation, normalized spread, z-score, and lead-lag cross-correlation charts |
-| **Strategy Backtest** | Long-only z-score mean-reversion with configurable thresholds, stop-loss, and rolling window |
-| **Performance Metrics** | Total return, annualized return, Sharpe ratio, max drawdown, win rate, Calmar ratio |
-| **Watchlist** | Persistent JSON-backed monitor list with one-click signal refresh |
-| **Email Alerts** | SMTP signal dispatch with HTML/plain-text email when z-score thresholds are breached |
-
-**Supported commodities:** Aluminum (铝) · Coal (煤炭) · Copper (铜) · Crude Oil (原油)
+[中文文档 README_CN.md](README_CN.md)
 
 ---
 
-## Technology Stack
+## Quick Start
 
-| Layer | Library / Tool |
-|-------|---------------|
-| UI | [Streamlit](https://streamlit.io) 1.28+ |
-| Market data | [akshare](https://akshare.akfamily.xyz) (A-shares + SHFE/DCE/CZCE/INE futures) |
-| Numerics | pandas · NumPy · SciPy |
-| Charts | Plotly (interactive) |
-| Notifications | Python `smtplib` (SMTP over SSL) |
-| Containerization | Docker (multi-stage) · Docker Compose |
-
----
-
-## Architecture
-
+```bash
+pip install -r requirements.txt
+streamlit run app.py
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                        app.py  (Streamlit)                  │
-│                                                             │
-│  ┌──────────┐  ┌───────────────┐  ┌──────────┐  ┌───────┐  │
-│  │  首页    │  │  因子分析     │  │ 策略回测 │  │ 监控  │  │
-│  │  Home    │  │  Analysis     │  │ Backtest │  │Monitor│  │
-│  └────┬─────┘  └───────┬───────┘  └─────┬────┘  └───┬───┘  │
-└───────┼────────────────┼────────────────┼────────────┼──────┘
-        │                │                │            │
-        ▼                ▼                ▼            ▼
-┌───────────────┐ ┌──────────────┐ ┌──────────┐ ┌──────────────┐
-│ data/         │ │ analysis/    │ │ backtest/│ │ monitor/     │
-│ fetcher.py    │ │ factors.py   │ │ engine.py│ │ watchlist.py │
-│               │ │              │ │          │ │ notifier.py  │
-│ akshare API   │ │ correlation  │ │ z-score  │ │ JSON store   │
-│  + GBM        │ │ spread       │ │ signals  │ │ SMTP email   │
-│  fallback     │ │ z-score      │ │ metrics  │ │              │
-│               │ │ lead-lag     │ │          │ │              │
-└───────────────┘ └──────────────┘ └──────────┘ └──────────────┘
-        │
-        ▼
-  akshare (live)
-  ─────────────
-  SHFE  AL0 / CU0
-  CZCE  ZC0
-  INE   SC0
-  A-share daily (qfq-adjusted)
-```
-
-Data flows left-to-right: **fetch → align → factor calculation → signal → backtest / alert**.
 
 ---
 
 ## Project Structure
 
 ```
-Commodity-driven Equity Analyzer/
-├── app.py                  # Streamlit entry point; all UI and page routing
-├── config.py               # Commodity definitions, stock mappings, default params
-├── requirements.txt
-├── Dockerfile              # Multi-stage build (builder + slim runtime)
-├── docker-compose.yml
-├── .dockerignore
-├── .streamlit/
-│   └── config.toml         # Server settings, CORS, theme
-│
-├── data/
-│   └── fetcher.py          # fetch_commodity() / fetch_stock()
-│                           # → tries akshare, falls back to synthetic GBM
-│
-├── analysis/
-│   └── factors.py          # rolling_correlation · spread · rolling_zscore
-│                           # lead_lag · volatility_annualized · score_stock
-│
-├── backtest/
-│   └── engine.py           # run() → portfolio DataFrame + trades + metrics
-│
-├── monitor/
-│   ├── watchlist.py        # add / remove / update_signal (watchlist.json)
-│   └── notifier.py         # send_signals() via SMTP SSL
-│
-└── watchlist.json          # Auto-created; persisted via Docker volume
+app.py                  # Main entry point, UI and page routing
+config.py               # Commodity/stock static config, default strategy params
+data/
+  fetcher.py            # Data layer (akshare → BaoStock → local cache → synthetic)
+  cache.py              # SQLite local price cache
+analysis/
+  factors.py            # Factor calculation (correlation, spread, Z-Score, lead-lag, regression)
+backtest/
+  engine.py             # Z-Score mean-reversion backtest engine
+monitor/
+  watchlist.py          # Watchlist persistence (JSON)
+  notifier.py           # Email signal notifications (SMTP SSL)
 ```
 
 ---
 
-## How It Works
+## Features
 
-### 1. Data Layer (`data/fetcher.py`)
+### Home
+- Auto-matches related stocks for the selected commodity
+- Calculates full-period correlation, annualized volatility, current Z-Score
+- Composite ranking score (correlation 60pts + volatility 20pts + Z-Score deviation 20pts)
+- Displays current buy/sell signals
 
-`fetch_commodity` and `fetch_stock` are decorated with `@st.cache_data(ttl=3600)`, so each symbol is fetched at most once per hour per session.
+### Factor Analysis
+- **Price comparison**: both series normalized to 100, comparing relative performance
+- **Rolling correlation**: Pearson correlation coefficient over a rolling window
+- **Spread Z-Score**: standard deviations of current spread from historical mean
+- **Lead-lag analysis**: cross-correlation to determine which series leads
+- **Regression analysis**: OLS fit of Y = aX + b with five statistical metrics
 
-- **Primary source:** akshare — `futures_main_sina(symbol)` for continuous futures contracts; `stock_zh_a_hist(symbol, adjust="qfq")` for forward-adjusted A-share prices.
-- **Fallback:** If akshare fails (network issue, API change), a correlated Geometric Brownian Motion series is generated deterministically from the ticker seed, so all downstream features remain functional for demo/dev purposes.
+### Strategy Backtest
+- Z-Score mean-reversion strategy, long-only
+- Configurable buy/sell thresholds, stop-loss ratio, and initial capital
+- Outputs equity curve, max drawdown, Sharpe ratio, win rate, etc.
 
-### 2. Factor Calculations (`analysis/factors.py`)
+### Monitor
+- Persistent watchlist with signal refresh
+- Email push notifications via SMTP (QQ Mail, 163, Gmail, etc.)
 
-All calculations operate on aligned DataFrames (inner join on business dates).
+---
 
-| Factor | Method |
-|--------|--------|
-| **Correlation** | Pearson correlation of daily log-returns over a rolling window (default 60 days) |
-| **Spread** | Both series rebased to 100 at the start of the window; spread = `norm_commodity − norm_stock` |
-| **Z-Score** | `(spread − rolling_mean) / rolling_std` — measures how many standard deviations the spread has deviated from its recent mean |
-| **Lead-Lag** | Cross-correlation of log-returns at integer lags `−10 … +10`; positive lag = commodity leads stock |
+## Data Sources
 
-**Composite score** used for stock ranking:
+Four-tier fallback chain:
 
 ```
-score = |correlation| × 60   +   max(0, 20 − annualized_vol × 50)
-                              +   max(0, 20 − |current_z| × 4)
+akshare (live) → BaoStock (fallback) → Local SQLite cache → Synthetic data (last resort)
 ```
 
-### 3. Backtesting Engine (`backtest/engine.py`)
+| Tier | Description |
+|------|-------------|
+| akshare | Commodity: SHFE/DCE/CZCE continuous contracts via Sina; Stock: Eastmoney daily, forward-adjusted |
+| BaoStock | Free A-share historical data, no token required, better network compatibility |
+| Local cache | SQLite stores previously fetched data; works offline after first successful fetch |
+| Synthetic | GBM-simulated prices, **for UI continuity only — not suitable for research** |
 
-Simulates a **long-only, fully-invested** mean-reversion strategy:
+Data source is clearly labeled in the UI: 🟢 Live / 🔵 Cached / 🟡 Synthetic.
 
-```
-Buy  → when z-score crosses below  buy_threshold  (default −2.0)
-Sell → when z-score crosses above  sell_threshold (default +2.0)
-      OR unrealized return < stop_loss           (default −5%)
-```
+### Covered Instruments
 
-Position sizing: 100% of available capital at each entry (single stock, no leverage).
+| Commodity | Futures Symbol | Related Stocks |
+|-----------|---------------|----------------|
+| Aluminum | AL0 (SHFE continuous) | Chalco, Nanshan Aluminum, Yunnan Aluminum, Shenghuo, Tianshan Aluminum, Mingtai Aluminum |
+| Gold | AU0 (SHFE continuous) | Zijin Mining, Shandong Gold, CNGC Gold, Hunan Gold, Tibet Gold, Chifeng Gold |
 
-Performance metrics computed:
+---
 
-| Metric | Formula |
+## Factor Formulas
+
+### Normalized Price
+
+$$P^*_t = \frac{P_t}{P_0} \times 100$$
+
+Both commodity and stock prices are normalized to a common base (= 100 at the start date) to eliminate unit differences and compare relative performance directly.
+
+### Rolling Correlation
+
+$$\rho_t = \text{Pearson}(r^C_{t-N+1:t},\ r^S_{t-N+1:t})$$
+
+At each trading day, computes the Pearson correlation of log-returns over the past N days. Default N = 60 days (~3 months).
+
+**Window size guide:**
+
+| Window | Characteristics | Use case |
+|--------|----------------|----------|
+| 20–40 days | Sensitive, noisy | Short-term |
+| 60 days (default) | Balanced | Medium-term |
+| 90–120 days | Smooth, lagging signals | Medium/long-term |
+
+### Spread Z-Score
+
+$$\text{Spread}_t = P^{C*}_t - P^{S*}_t$$
+
+$$Z_t = \frac{\text{Spread}_t - \mu_t}{\sigma_t}$$
+
+Measures how many standard deviations the current spread is from its rolling historical mean.
+
+| Z-Score | Meaning | Signal |
+|---------|---------|--------|
+| < −2 | Stock relatively undervalued | 🟢 Buy |
+| > +2 | Stock relatively overvalued | 🔴 Sell |
+| −2 to +2 | Normal range | Hold |
+
+### Lead-Lag Analysis
+
+$$\rho(k) = \text{Corr}(r^C_{t-k},\ r^S_t), \quad k \in [-10, +10]$$
+
+| k | Meaning |
+|---|---------|
+| k > 0 | Commodity leads stock by k days |
+| k < 0 | Stock leads commodity by \|k\| days |
+| k = 0 | Synchronous movement |
+
+### Regression Analysis (OLS)
+
+$$Y = aX + b$$
+
+$$a = \frac{\text{Cov}(X, Y)}{\text{Var}(X)}, \quad b = \bar{Y} - a\bar{X}$$
+
+- X: commodity daily log-return
+- Y: stock daily log-return
+
+| Output | Meaning |
 |--------|---------|
-| Annualized return | `(1 + total_return)^(365/days) − 1` |
-| Sharpe ratio | `mean(daily_ret) / std(daily_ret) × √252` |
-| Max drawdown | `min((value − rolling_max) / rolling_max)` |
-| Win rate | `winning_exits / total_exits` |
-| Calmar ratio | `annual_return / |max_drawdown|` |
-
-### 4. Monitoring & Alerts (`monitor/`)
-
-`watchlist.json` is a flat JSON array. Each entry records the commodity, stock code, strategy parameters, last signal, last z-score, and last check timestamp.
-
-Email notifications are sent via `smtplib.SMTP_SSL`. The message is dual-part (plain text + HTML table) and is triggered manually from the Monitor tab or can be wired to a cron/scheduler externally.
+| Coefficient (a) | Slope: expected stock return per 1% commodity move |
+| Constant (b) | Intercept: baseline daily return independent of commodity |
+| Std Error | Standard error of slope estimate; smaller = more precise |
+| P-value | < 0.05 indicates statistically significant relationship |
+| R-squared | Fraction of stock return variance explained by commodity |
 
 ---
 
-## Quick Start
+## Backtest Strategy
 
-### Local
+**Type**: Z-Score mean-reversion, long-only
 
-```bash
-# 1. Install dependencies (Python 3.10+)
-pip install -r requirements.txt
+**Trading logic:**
 
-# 2. Run
-streamlit run app.py
-# Open http://localhost:8501
+```
+Each trading day:
+  If in position:
+    Z-Score > sell threshold  → Normal sell (takes priority)
+    Unrealized loss < stop-loss → Stop-loss sell
+  If flat AND Z-Score < buy threshold AND no trade executed today → Buy
 ```
 
-### Docker Compose (recommended for NAS)
+**Parameters:**
 
-```bash
-# Build image and start in background
-docker compose up -d --build
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| Buy Z-Score threshold | −2.0 | Enter long when Z-Score drops below this value |
+| Sell Z-Score threshold | +2.0 | Exit long when Z-Score rises above this value |
+| Z-Score window | 60 days | Lookback period for spread mean and std |
+| Stop-loss ratio | −5% | Force exit if unrealized loss exceeds this |
+| Initial capital | ¥100,000 | Starting cash for equity curve calculation |
 
-# View logs
-docker compose logs -f
+**Performance metrics:**
 
-# Stop
-docker compose down
-```
-
-The app will be available at `http://<host-ip>:8501`.
-
-`watchlist.json` is stored in a named Docker volume (`watchlist_data`) and persists across container restarts and image rebuilds.
+| Metric | Formula | Description |
+|--------|---------|-------------|
+| Total return | $(V_{end} - V_0) / V_0$ | Cumulative return over full period |
+| Annual return | $(1+R)^{1/T}-1$ | Annualized equivalent return |
+| Sharpe ratio | $\bar{r}_d / \sigma_d \times \sqrt{252}$ | Return per unit of risk; > 1 is good |
+| Max drawdown | Peak-to-trough decline | Worst-case loss from any high point |
+| Win rate | Profitable trades / total trades | Probability of profit per trade |
 
 ---
 
-## Configuration
+## Email Notifications
 
-### Commodity & Stock Mapping (`config.py`)
+Configure SMTP in the Monitor tab to receive signal alerts by email.
 
-Add new commodities by extending `COMMODITY_CONFIG`:
+**QQ Mail example:**
+1. Log in to QQ Mail web → Settings → Account → Enable SMTP service
+2. Generate an authorization code (16-character string, not your login password)
+3. Enter in the Monitor tab: server `smtp.qq.com`, port `465`, use the authorization code as password
 
-```python
-"锌 (Zinc)": {
-    "futures_symbol": "ZN0",   # akshare continuous contract symbol
-    "color": "#17BECF",
-    "unit": "元/吨",
-    "related_stocks": [
-        {"code": "000362", "name": "西部矿业", "industry": "有色金属-锌"},
-    ],
-},
-```
-
-### Default Strategy (`config.py`)
-
-```python
-DEFAULT_STRATEGY = {
-    "buy_threshold":  -2.0,   # z-score buy signal
-    "sell_threshold":  2.0,   # z-score sell signal
-    "stop_loss":      -0.05,  # -5% hard stop
-    "zscore_window":   60,    # rolling window in trading days
-}
-```
-
-### Email Notifications
-
-Configure SMTP credentials in the **监控 → 邮件通知配置** section of the UI. Tested with QQ Mail (`smtp.qq.com:465`) and Gmail (`smtp.gmail.com:465`). Use an app-specific password, not your account password.
-
-### Docker Port
-
-Edit the left-hand port in `docker-compose.yml` to avoid conflicts with other services on your NAS:
-
-```yaml
-ports:
-  - "8888:8501"   # host:container
-```
-
----
-
-## Limitations
-
-- **Data quality:** Results depend entirely on the accuracy of akshare data. Gaps or adjustments in the source data directly affect factor calculations.
-- **Overfitting risk:** Z-score thresholds are not optimized; the default ±2σ is a common starting point, not a validated parameter.
-- **Long-only:** The backtest does not support short positions or pairs trading.
-- **Single-asset:** Each backtest covers one commodity–stock pair. Portfolio-level analysis is not implemented.
-- **Past ≠ future:** All backtest results are historical simulations and do not predict future returns.
+No fees required — sends via your own email account.
 
 ---
 
 ## Disclaimer
 
-This tool is intended for quantitative research and educational purposes only. It does not constitute investment advice. Always conduct your own due diligence before making any investment decisions.
+This tool is for research and educational purposes only and does not constitute investment advice. Past backtest results do not guarantee future performance.

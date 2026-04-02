@@ -5,3 +5,6 @@ __pycache__/
 .env
 watchlist.json
 .claude/
+.idea/
+*.tar.gz
+*.db

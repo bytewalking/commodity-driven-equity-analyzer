@@ -1,7 +1,8 @@
-"""Factor calculation: correlation, spread, z-score, lead-lag."""
+"""Factor calculation: correlation, spread, z-score, lead-lag, regression."""
 
 import numpy as np
 import pandas as pd
+from scipy import stats
 
 
 def align(commodity: pd.DataFrame, stock: pd.DataFrame) -> pd.DataFrame:
@@ -84,6 +85,44 @@ def volatility_annualized(prices: pd.Series) -> float:
     """Annualized volatility from daily log-returns."""
     lr = np.log(prices).diff().dropna()
     return float(lr.std() * np.sqrt(252))
+
+
+def regression_analysis(aligned: pd.DataFrame) -> dict:
+    """OLS regression of stock daily log-returns (Y) on commodity daily log-returns (X).
+
+    Returns Y = a*X + b where:
+        a = coefficient (slope)
+        b = constant (intercept)
+
+    Also returns Standard Error, P-value, and R-squared.
+    """
+    lr = log_returns(aligned)
+    x = lr["commodity"].values
+    y = lr["stock"].values
+
+    # Drop any NaN/Inf
+    mask = np.isfinite(x) & np.isfinite(y)
+    x, y = x[mask], y[mask]
+
+    if len(x) < 10:
+        return {
+            "coefficient": np.nan,
+            "constant": np.nan,
+            "std_err": np.nan,
+            "p_value": np.nan,
+            "r_squared": np.nan,
+            "n_obs": 0,
+        }
+
+    result = stats.linregress(x, y)
+    return {
+        "coefficient": float(result.slope),       # a
+        "constant": float(result.intercept),      # b
+        "std_err": float(result.stderr),          # Standard Error of slope
+        "p_value": float(result.pvalue),          # P-value of slope
+        "r_squared": float(result.rvalue ** 2),  # R-squared
+        "n_obs": int(len(x)),
+    }
 
 
 def score_stock(corr: float, ann_vol: float, current_zscore: float) -> float:

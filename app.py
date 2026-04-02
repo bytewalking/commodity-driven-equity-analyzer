@@ -52,7 +52,7 @@ with st.sidebar:
     st.subheader("日期范围")
     col_s, col_e = st.columns(2)
     with col_s:
-        start_input = st.date_input("开始", value=date(2023, 1, 1), key="date_start")
+        start_input = st.date_input("开始", value=date(2015, 1, 1), key="date_start")
     with col_e:
         end_input = st.date_input("结束", value=date.today(), key="date_end")
 
@@ -69,21 +69,38 @@ with st.sidebar:
 # ============================================================
 
 @st.cache_data(show_spinner=False)
-def _commodity(symbol: str, s: str, e: str) -> pd.DataFrame:
+def _commodity(symbol: str, s: str, e: str) -> tuple:
     return fetch_commodity(symbol, s, e)
 
 
 @st.cache_data(show_spinner=False)
-def _stock(code: str, s: str, e: str) -> pd.DataFrame:
+def _stock(code: str, s: str, e: str) -> tuple:
     return fetch_stock(code, s, e)
 
 
-def load_commodity() -> pd.DataFrame:
+def load_commodity() -> tuple:
     return _commodity(cfg["futures_symbol"], start_str, end_str)
 
 
-def load_stock(code: str) -> pd.DataFrame:
+def load_stock(code: str) -> tuple:
     return _stock(code, start_str, end_str)
+
+
+def _src_badge(src: str) -> str:
+    return {
+        "akshare":    "🟢 akshare 实时数据",
+        "baostock":   "🟢 BaoStock 实时数据",
+        "本地缓存":    "🔵 本地缓存数据",
+        "本地缓存（旧）": "🟠 本地缓存（旧）",
+    }.get(src, "🟡 模拟数据（所有数据源失败）")
+
+
+def _show_src(label: str, src: str, err: str | None) -> None:
+    """Display data source caption; if failed, show error in expander."""
+    st.caption(f"{label}：{_src_badge(src)}")
+    if err:
+        with st.expander("查看失败原因"):
+            st.code(err, language=None)
 
 
 # ============================================================
@@ -104,15 +121,21 @@ with TAB_HOME:
     st.markdown("根据选定商品，自动匹配相关股票并评分排名。")
 
     with st.spinner("正在加载数据并计算相关性…"):
-        comm_df = load_commodity()
+        comm_df, comm_src, comm_err = load_commodity()
 
         rows = []
+        synthetic_stocks = []
+        stock_errors = {}
         for stock_info in cfg["related_stocks"]:
             code = stock_info["code"]
             name = stock_info["name"]
             industry = stock_info["industry"]
 
-            stk_df = load_stock(code)
+            stk_df, stk_src, stk_err = load_stock(code)
+            if stk_src == "模拟数据":
+                synthetic_stocks.append(name)
+            if stk_err:
+                stock_errors[name] = stk_err
             aligned = fac.align(comm_df, stk_df)
 
             if aligned.empty or len(aligned) < 30:
@@ -142,12 +165,22 @@ with TAB_HOME:
                     "当前 Z-Score": round(current_z, 2),
                     "当前信号": signal or "—",
                     "综合评分": score,
+                    "数据来源": {"akshare": "🟢 实时", "baostock": "🟢 实时", "本地缓存": "🔵 缓存", "本地缓存（旧）": "🟠 旧缓存"}.get(stk_src, "🟡 模拟"),
                 }
             )
 
     if rows:
         df_rank = pd.DataFrame(rows).sort_values("综合评分", ascending=False).reset_index(drop=True)
         df_rank.index += 1
+
+        # Data source banners
+        _show_src("商品数据", comm_src, comm_err)
+        if synthetic_stocks:
+            st.warning(f"以下股票使用模拟数据（akshare 获取失败）：{', '.join(synthetic_stocks)}")
+            if stock_errors:
+                with st.expander("查看股票获取失败原因"):
+                    for sname, serr in stock_errors.items():
+                        st.text(f"{sname}: {serr}")
 
         st.subheader("相关股票排名")
         st.dataframe(
@@ -165,6 +198,7 @@ with TAB_HOME:
 
         # Commodity price chart
         st.subheader(f"{commodity_name} 价格走势")
+        _show_src("数据来源", comm_src, comm_err)
         fig = go.Figure()
         fig.add_trace(
             go.Scatter(
@@ -223,11 +257,28 @@ with TAB_ANALYSIS:
     st.session_state["selected_stock_name"] = selected_name
 
     zscore_window = st.slider("Z-Score 滚动窗口（天）", 20, 120, 60, key="analysis_window")
+    with st.expander("ℹ️ 什么是滚动窗口？"):
+        st.markdown(
+            "滚动窗口 $N$ 决定了计算**滚动相关性**和**价差 Z-Score** 时向前回看的天数。"
+            "\n\n| 窗口 | 特点 | 适用场景 |"
+            "\n|------|------|---------|"
+            "\n| 小（20～40 天） | 对近期变化敏感，信号频繁，噪音多 | 短线 |"
+            "\n| 中（60 天，默认） | 灵敏度与稳定性平衡，约 3 个月交易日 | 中线 |"
+            "\n| 大（90～120 天） | 平滑，误报少，信号滞后 | 中长线 |"
+            "\n\n**举例**：同样的当前价差偏离，窗口 = 20 天时 Z-Score 可能是 2.5（触发信号）；"
+            "窗口 = 120 天时可能只有 1.2（不触发），因为参考基准更长，当前偏离显得不那么异常。"
+        )
 
     with st.spinner("计算因子中…"):
-        comm_df = load_commodity()
-        stk_df = load_stock(selected_code)
+        comm_df, comm_src, comm_err = load_commodity()
+        stk_df, stk_src, stk_err = load_stock(selected_code)
         aligned = fac.align(comm_df, stk_df)
+
+    src_col1, src_col2 = st.columns(2)
+    with src_col1:
+        _show_src("商品数据", comm_src, comm_err)
+    with src_col2:
+        _show_src("股票数据", stk_src, stk_err)
 
     if aligned.empty or len(aligned) < zscore_window:
         st.warning("数据不足，请调整日期范围或缩短滚动窗口。")
@@ -253,6 +304,13 @@ with TAB_ANALYSIS:
 
         # --- Chart 1: Dual-axis price chart ---
         st.subheader("价格对比（归一化至100）")
+        with st.expander("📐 公式说明"):
+            st.latex(r"P^*_t = \frac{P_t}{P_0} \times 100")
+            st.markdown(
+                "将商品与股票价格统一归一化到同一基准（起始日 = 100），"
+                "消除量纲差异后直接比较两者涨跌幅的相对强弱。"
+                "\n\n**参数**\n- $P_0$：所选日期范围的第一个交易日收盘价\n- $P_t$：第 $t$ 日收盘价"
+            )
         norm_comm = aligned["commodity"] / aligned["commodity"].iloc[0] * 100
         norm_stk = aligned["stock"] / aligned["stock"].iloc[0] * 100
 
@@ -274,6 +332,16 @@ with TAB_ANALYSIS:
 
         # --- Chart 2: Rolling correlation ---
         st.subheader("滚动相关性")
+        with st.expander("📐 公式说明"):
+            st.latex(r"\rho_t = \frac{\sum_{i=t-N+1}^{t}(r^C_i - \bar{r}^C)(r^S_i - \bar{r}^S)}{\sqrt{\sum(r^C_i-\bar{r}^C)^2 \cdot \sum(r^S_i-\bar{r}^S)^2}}")
+            st.markdown(
+                "在每个交易日，取过去 $N$ 天的日对数收益率，计算商品与股票之间的 **Pearson 相关系数**，滚动向前推进。"
+                "\n\n**参数**"
+                "\n- $r^C_i$：第 $i$ 日商品对数收益率 $= \\ln(P^C_i / P^C_{i-1})$"
+                "\n- $r^S_i$：第 $i$ 日股票对数收益率"
+                f"\n- $N$：滚动窗口 = **{zscore_window} 天**（可通过上方滑块调整）"
+                "\n- 取值范围：$[-1, 1]$，越接近 1 表示同向联动越强"
+            )
         fig2 = go.Figure()
         fig2.add_trace(go.Scatter(
             x=corr_series.index, y=corr_series,
@@ -292,6 +360,19 @@ with TAB_ANALYSIS:
         st.subheader("价差 Z-Score")
         buy_thr = DEFAULT_STRATEGY["buy_threshold"]
         sell_thr = DEFAULT_STRATEGY["sell_threshold"]
+        with st.expander("📐 公式说明"):
+            st.latex(r"\text{Spread}_t = P^{C*}_t - P^{S*}_t")
+            st.latex(r"Z_t = \frac{\text{Spread}_t - \mu_t}{\sigma_t}")
+            st.markdown(
+                "**第一步**：计算归一化价差（商品 - 股票，均以起始日 = 100 为基准）\n\n"
+                "**第二步**：对价差做滚动 Z-Score 标准化，衡量当前价差偏离历史均值的程度（单位：标准差）"
+                "\n\n**参数**"
+                f"\n- $N$：滚动窗口 = **{zscore_window} 天**"
+                "\n- $\\mu_t$：过去 $N$ 天价差的均值"
+                "\n- $\\sigma_t$：过去 $N$ 天价差的标准差"
+                f"\n- 买入阈值：$Z < {buy_thr}$（股票相对低估）"
+                f"\n- 卖出阈值：$Z > {sell_thr}$（股票相对高估）"
+            )
 
         fig3 = go.Figure()
         fig3.add_trace(go.Scatter(
@@ -311,6 +392,17 @@ with TAB_ANALYSIS:
 
         # --- Chart 4: Lead-lag cross-correlation ---
         st.subheader("领先-滞后分析")
+        with st.expander("📐 公式说明"):
+            st.latex(r"\rho(k) = \text{Corr}(r^C_{t-k},\ r^S_t), \quad k \in [-10, +10]")
+            st.markdown(
+                "对每个滞后天数 $k$，将商品收益率序列平移 $k$ 天后与股票收益率计算相关系数，"
+                "取 $|\\rho(k)|$ 最大的 $k$ 为最优滞后。"
+                "\n\n**参数解读**"
+                "\n- $k > 0$：商品领先股票 $k$ 天，商品价格变动后股票才跟上"
+                "\n- $k < 0$：股票领先商品 $|k|$ 天，市场已将预期提前定价到股票"
+                "\n- $k = 0$：同步变动，无明显领先滞后关系"
+                "\n- 搜索范围：$k \\in [-10, +10]$ 个交易日"
+            )
         lags = list(ll["correlations"].keys())
         corrs = list(ll["correlations"].values())
 
@@ -328,6 +420,100 @@ with TAB_ANALYSIS:
         )
         st.plotly_chart(fig4, use_container_width=True)
         st.caption(f"结论：{ll['interpretation']}，最大相关系数 {ll['best_corr']:.4f}")
+
+        # --- Section: Regression Analysis ---
+        st.divider()
+        st.subheader("回归分析（日收益率）")
+        st.markdown(
+            "以**商品日收益率**为 X，**个股日收益率**为 Y，拟合线性回归 **Y = a·X + b**，"
+            "用于量化两者在统计学上的线性关系与显著性。"
+        )
+        with st.expander("📐 公式说明"):
+            st.latex(r"Y = a \cdot X + b")
+            st.latex(r"a = \frac{\sum(X_i - \bar{X})(Y_i - \bar{Y})}{\sum(X_i - \bar{X})^2}, \quad b = \bar{Y} - a\bar{X}")
+            st.markdown(
+                "使用 **OLS（普通最小二乘法）** 最小化残差平方和 $\\sum(Y_i - aX_i - b)^2$。"
+                "\n\n**输入变量**"
+                "\n- $X_i = \\ln(P^C_i / P^C_{i-1})$：商品第 $i$ 日对数收益率"
+                "\n- $Y_i = \\ln(P^S_i / P^S_{i-1})$：股票第 $i$ 日对数收益率"
+                "\n\n**输出参数**"
+                "\n| 参数 | 公式 | 含义 |"
+                "\n|------|------|------|"
+                "\n| $a$（Coefficient） | 见上 | 商品涨 1% 时股票平均涨幅 |"
+                "\n| $b$（Constant） | 见上 | 与商品无关的基础日收益率 |"
+                "\n| Std Error | $SE = \\sqrt{\\frac{\\sum e_i^2}{(n-2)\\sum(X_i-\\bar{X})^2}}$ | $a$ 的估计误差，越小越稳定 |"
+                "\n| P-value | $t = a/SE$，查 $t$ 分布 | $< 0.05$ 说明 $a$ 统计显著 |"
+                "\n| $R^2$ | $1 - SS_{res}/SS_{tot}$ | X 能解释 Y 波动的比例 |"
+            )
+
+        reg = fac.regression_analysis(aligned)
+
+        if reg["n_obs"] < 10:
+            st.warning("样本量不足，无法进行回归分析。请扩大日期范围。")
+        else:
+            r1, r2, r3, r4, r5 = st.columns(5)
+            r1.metric(
+                "Coefficient (a)",
+                f"{reg['coefficient']:.4f}",
+                help="斜率：商品日收益率每变动1单位，个股日收益率的变动幅度。",
+            )
+            r2.metric(
+                "Constant (b)",
+                f"{reg['constant']:.4f}",
+                help="截距：与商品收益率无关的个股基础日收益率。",
+            )
+            r3.metric(
+                "Std Error",
+                f"{reg['std_err']:.4f}",
+                help="斜率估计的标准误，越小说明系数估计越精确。",
+            )
+            p_val = reg["p_value"]
+            r4.metric(
+                "P-value",
+                f"{p_val:.4f}" if p_val >= 0.0001 else "<0.0001",
+                delta="显著" if p_val < 0.05 else "不显著",
+                delta_color="normal" if p_val < 0.05 else "off",
+                help="H₀: coefficient=0。P<0.05 说明商品收益率对个股收益率有统计显著影响。",
+            )
+            r5.metric(
+                "R-squared",
+                f"{reg['r_squared']:.4f}",
+                help="拟合优度：商品收益率能解释个股收益率波动的比例。",
+            )
+
+            # Scatter plot: X=commodity returns, Y=stock returns, with regression line
+            lr_plot = fac.log_returns(aligned).dropna()
+            x_vals = lr_plot["commodity"]
+            y_vals = lr_plot["stock"]
+            x_line = np.linspace(x_vals.min(), x_vals.max(), 200)
+            y_line = reg["coefficient"] * x_line + reg["constant"]
+
+            fig_reg = go.Figure()
+            fig_reg.add_trace(go.Scatter(
+                x=x_vals, y=y_vals,
+                mode="markers",
+                name="日收益率散点",
+                marker=dict(color="rgba(31,119,180,0.35)", size=4),
+            ))
+            fig_reg.add_trace(go.Scatter(
+                x=x_line, y=y_line,
+                mode="lines",
+                name=f"回归线 (a={reg['coefficient']:.4f}, b={reg['constant']:.4f})",
+                line=dict(color="#D62728", width=2),
+            ))
+            fig_reg.update_layout(
+                xaxis_title=f"{commodity_name} 日收益率",
+                yaxis_title=f"{selected_name} 日收益率",
+                height=340,
+                margin=dict(l=0, r=0, t=10, b=0),
+                legend=dict(orientation="h", y=1.1),
+            )
+            st.plotly_chart(fig_reg, use_container_width=True)
+            st.caption(
+                f"样本量：{reg['n_obs']} 个交易日 | "
+                f"R²={reg['r_squared']:.4f}，"
+                f"{'回归关系在统计上显著（P<0.05）' if p_val < 0.05 else '回归关系在统计上不显著（P≥0.05）'}"
+            )
 
 
 # ============================================================
@@ -355,13 +541,46 @@ with TAB_BACKTEST:
         with col3:
             capital = st.number_input("初始资金（元）", value=100_000, step=10_000, key="bt_cap")
 
+    with st.expander("ℹ️ 参数说明"):
+        st.markdown(
+            "**策略逻辑**：Z-Score 均值回归 —— 当商品与股票价差偏离历史均值过大时，"
+            "预期价差会修复，据此做多股票。"
+        )
+        st.markdown("**参数详解**")
+        st.markdown(
+            "| 参数 | 默认值 | 含义 |"
+            "\n|------|--------|------|"
+            "\n| 买入 Z-Score 阈值 | −2.0 | 当 Z-Score 低于此值时买入：股票相对商品偏低，预期向上修复 |"
+            "\n| 卖出 Z-Score 阈值 | +2.0 | 当 Z-Score 高于此值时卖出：价差已回归或过度修复 |"
+            "\n| Z-Score 窗口 | 60 天 | 计算价差均值和标准差的回看天数，越大信号越稳但越滞后 |"
+            "\n| 止损比例 | −5% | 持仓期间浮亏超过此比例时强制平仓，控制单笔最大亏损 |"
+            "\n| 初始资金 | 10 万元 | 回测起始本金，用于计算资金曲线和收益率 |"
+        )
+        st.divider()
+        st.markdown("**回测指标说明**")
+        st.markdown(
+            "| 指标 | 公式 | 含义 |"
+            "\n|------|------|------|"
+            "\n| 总收益率 | $(V_{末} - V_0) / V_0$ | 整个回测期间的累计收益 |"
+            "\n| 年化收益率 | $(1 + R)^{1/T} - 1$ | 折算为每年的等效收益率，$T$ 为年数 |"
+            "\n| 夏普比率 | $\\bar{r}_d / \\sigma_d \\times \\sqrt{252}$ | 每承担一单位风险获得的超额收益，> 1 为良好 |"
+            "\n| 最大回撤 | $\\max(V_{高} - V_{低}) / V_{高}$ | 从历史最高点到最低点的最大跌幅，衡量最坏情况 |"
+            "\n| 胜率 | 盈利交易次数 / 总交易次数 | 每笔交易平均获利的概率 |"
+        )
+
     run_bt = st.button("▶ 运行回测", type="primary", key="bt_run")
 
     if run_bt:
         with st.spinner("回测中…"):
-            comm_df = load_commodity()
-            stk_df = load_stock(selected_code_bt)
+            comm_df, comm_src_bt, comm_err_bt = load_commodity()
+            stk_df, stk_src_bt, stk_err_bt = load_stock(selected_code_bt)
             aligned = fac.align(comm_df, stk_df)
+
+            bt_src_col1, bt_src_col2 = st.columns(2)
+            with bt_src_col1:
+                _show_src("商品数据", comm_src_bt, comm_err_bt)
+            with bt_src_col2:
+                _show_src("股票数据", stk_src_bt, stk_err_bt)
 
             if aligned.empty or len(aligned) < zw:
                 st.error("数据不足，无法完成回测。请调整日期范围或缩短窗口。")
@@ -545,8 +764,8 @@ with TAB_MONITOR:
                 sell_t = float(params.get("sell_threshold", 2.0))
 
                 try:
-                    c_df = fetch_commodity(comm_sym, DEFAULT_START, DEFAULT_END)
-                    s_df = fetch_stock(code, DEFAULT_START, DEFAULT_END)
+                    c_df, _, _ = fetch_commodity(comm_sym, DEFAULT_START, DEFAULT_END)
+                    s_df, _, _ = fetch_stock(code, DEFAULT_START, DEFAULT_END)
                     aligned = fac.align(c_df, s_df)
                     if len(aligned) >= zw:
                         sp = fac.spread(aligned)
