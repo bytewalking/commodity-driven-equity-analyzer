@@ -7,6 +7,7 @@ Run:  streamlit run app.py
 
 from __future__ import annotations
 
+import os
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
@@ -21,6 +22,7 @@ from analysis import factors as fac
 from backtest import engine as bt
 from monitor import watchlist as wl
 from monitor import notifier
+from monitor import wecom_bot
 
 
 # ============================================================
@@ -866,3 +868,62 @@ with TAB_MONITOR:
                     st.success("邮件发送成功！")
                 else:
                     st.error(f"发送失败：{err}")
+
+    # ---- WeCom Smart Robot notification ----
+    st.divider()
+    st.subheader("💬 企业微信智能机器人通知")
+    with st.expander("配置企业微信机器人并推送信号"):
+        wc1, wc2 = st.columns(2)
+        with wc1:
+            wc_bot_id = st.text_input(
+                "Bot ID",
+                value=os.environ.get("WECOM_BOT_ID", ""),
+                key="wc_bot_id",
+            )
+            wc_secret = st.text_input(
+                "Secret",
+                value=os.environ.get("WECOM_BOT_SECRET", ""),
+                type="password",
+                key="wc_secret",
+            )
+        with wc2:
+            wc_chatid = st.text_input(
+                "Chat ID（群 chatid 或个人 userid）",
+                value=os.environ.get("WECOM_CHAT_ID", ""),
+                key="wc_chatid",
+                help="在企业微信群里 @ 机器人后，从后台事件回调中可获取群 chatid；单聊填对方 userid。",
+            )
+
+        wc_signals = st.session_state.get("latest_signals", [])
+        st.caption(f"待推送信号数：{len(wc_signals)}")
+
+        col_test, col_send = st.columns(2)
+        with col_test:
+            if st.button("🔌 测试连接", key="wc_test"):
+                if not wc_bot_id or not wc_secret or not wc_chatid:
+                    st.error("请填写 Bot ID、Secret 和 Chat ID。")
+                else:
+                    with st.spinner("连接中…"):
+                        ok, err = wecom_bot.send_markdown(
+                            wc_bot_id, wc_secret, wc_chatid,
+                            "✅ **企业微信机器人连接测试成功！**\n> 来自「商品因子分析平台」",
+                        )
+                    if ok:
+                        st.success("测试消息已发送，请查看企业微信。")
+                    else:
+                        st.error(f"发送失败：{err}")
+
+        with col_send:
+            if st.button("📤 推送信号", key="wc_send"):
+                if not wc_bot_id or not wc_secret or not wc_chatid:
+                    st.error("请填写 Bot ID、Secret 和 Chat ID。")
+                elif not wc_signals:
+                    st.warning("暂无信号可推送，请先刷新信号。")
+                else:
+                    with st.spinner("推送中…"):
+                        msg = wecom_bot.build_signal_message(wc_signals)
+                        ok, err = wecom_bot.send_markdown(wc_bot_id, wc_secret, wc_chatid, msg)
+                    if ok:
+                        st.success(f"已推送 {len(wc_signals)} 条信号到企业微信！")
+                    else:
+                        st.error(f"推送失败：{err}")
