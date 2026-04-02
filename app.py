@@ -143,9 +143,8 @@ with TAB_HOME:
 
             corr = fac.overall_correlation(aligned)
             vol = fac.volatility_annualized(aligned["stock"])
-            sp = fac.spread(aligned)
-            zs = fac.rolling_zscore(sp, window=min(60, len(sp) // 2))
-            current_z = float(zs.dropna().iloc[-1]) if not zs.dropna().empty else 0.0
+            cr_res = fac.cumret_spread_zscore(aligned)
+            current_z = float(cr_res["zscore"].dropna().iloc[-1]) if not cr_res["zscore"].dropna().empty else 0.0
 
             signal = None
             if current_z < DEFAULT_STRATEGY["buy_threshold"]:
@@ -256,17 +255,16 @@ with TAB_ANALYSIS:
     st.session_state["selected_stock_code"] = selected_code
     st.session_state["selected_stock_name"] = selected_name
 
-    zscore_window = st.slider("Z-Score 滚动窗口（天）", 20, 120, 60, key="analysis_window")
-    with st.expander("ℹ️ 什么是滚动窗口？"):
+    zscore_window = st.slider("滚动相关性窗口（天）", 20, 120, 60, key="analysis_window")
+    with st.expander("ℹ️ 窗口说明（仅影响滚动相关性图表）"):
         st.markdown(
-            "滚动窗口 $N$ 决定了计算**滚动相关性**和**价差 Z-Score** 时向前回看的天数。"
+            "此滑块控制**滚动相关性**的回看天数，不影响 Z-Score。"
             "\n\n| 窗口 | 特点 | 适用场景 |"
             "\n|------|------|---------|"
             "\n| 小（20～40 天） | 对近期变化敏感，信号频繁，噪音多 | 短线 |"
             "\n| 中（60 天，默认） | 灵敏度与稳定性平衡，约 3 个月交易日 | 中线 |"
             "\n| 大（90～120 天） | 平滑，误报少，信号滞后 | 中长线 |"
-            "\n\n**举例**：同样的当前价差偏离，窗口 = 20 天时 Z-Score 可能是 2.5（触发信号）；"
-            "窗口 = 120 天时可能只有 1.2（不触发），因为参考基准更长，当前偏离显得不那么异常。"
+            "\n\n> **Z-Score 使用全量历史数据计算，不受此窗口影响。**"
         )
 
     with st.spinner("计算因子中…"):
@@ -284,8 +282,8 @@ with TAB_ANALYSIS:
         st.warning("数据不足，请调整日期范围或缩短滚动窗口。")
     else:
         corr_series = fac.rolling_correlation(aligned, window=zscore_window)
-        sp = fac.spread(aligned)
-        zs = fac.rolling_zscore(sp, window=zscore_window)
+        cr_res = fac.cumret_spread_zscore(aligned)
+        zs = cr_res["zscore"]
         ll = fac.lead_lag(aligned, max_lag=10)
         current_z = float(zs.dropna().iloc[-1])
         overall_corr = fac.overall_correlation(aligned)
@@ -357,21 +355,22 @@ with TAB_ANALYSIS:
         st.plotly_chart(fig2, use_container_width=True)
 
         # --- Chart 3: Z-Score ---
-        st.subheader("价差 Z-Score")
+        st.subheader("累积收益 OLS 残差 Z-Score")
         buy_thr = DEFAULT_STRATEGY["buy_threshold"]
         sell_thr = DEFAULT_STRATEGY["sell_threshold"]
         with st.expander("📐 公式说明"):
-            st.latex(r"\text{Spread}_t = P^{C*}_t - P^{S*}_t")
-            st.latex(r"Z_t = \frac{\text{Spread}_t - \mu_t}{\sigma_t}")
+            st.latex(r"R_t^C = \left(\frac{P_t^C}{P_0^C} - 1\right) \times 100\%")
+            st.latex(r"R_t^S = \left(\frac{P_t^S}{P_0^S} - 1\right) \times 100\%")
+            st.latex(r"\text{Spread}_t = R_t^C - R_t^S")
+            st.latex(r"Z_t = \frac{\text{Spread}_t - \bar{S}}{\sigma_S}")
             st.markdown(
-                "**第一步**：计算归一化价差（商品 - 股票，均以起始日 = 100 为基准）\n\n"
-                "**第二步**：对价差做滚动 Z-Score 标准化，衡量当前价差偏离历史均值的程度（单位：标准差）"
-                "\n\n**参数**"
-                f"\n- $N$：滚动窗口 = **{zscore_window} 天**"
-                "\n- $\\mu_t$：过去 $N$ 天价差的均值"
-                "\n- $\\sigma_t$：过去 $N$ 天价差的标准差"
-                f"\n- 买入阈值：$Z < {buy_thr}$（股票相对低估）"
-                f"\n- 卖出阈值：$Z > {sell_thr}$（股票相对高估）"
+                "**第一步**：将两条价格序列从第1天起各自压缩为累积涨跌幅（%），消除量纲差异\n\n"
+                "**第二步**：差值 = 商品累积涨幅% − 股票累积涨幅%，衡量两者的相对强弱\n\n"
+                "**第三步**：用**全量历史**的均值 $\\bar{S}$ 和标准差 $\\sigma_S$ 做 Z-Score 标准化\n\n"
+                "**关键**：$\\bar{S}$ 和 $\\sigma_S$ 来自整段选定历史，±2 代表真正的历史极端偏离，"
+                "不会像滚动窗口那样随时间漂移。\n\n"
+                f"- 买入阈值：$Z < {buy_thr}$（股票涨幅相对商品历史性偏低，预期修复）\n"
+                f"- 卖出阈值：$Z > {sell_thr}$（股票涨幅相对商品历史性偏高）"
             )
 
         fig3 = go.Figure()
@@ -535,7 +534,6 @@ with TAB_BACKTEST:
             buy_thr = st.number_input("买入 Z-Score 阈值", value=-2.0, step=0.1, key="bt_buy")
             sell_thr = st.number_input("卖出 Z-Score 阈值", value=2.0, step=0.1, key="bt_sell")
         with col2:
-            zw = st.slider("Z-Score 窗口（天）", 20, 120, 60, key="bt_zw")
             sl = st.number_input("止损比例", value=-0.05, step=0.01,
                                  min_value=-0.5, max_value=0.0, key="bt_sl")
         with col3:
@@ -550,9 +548,8 @@ with TAB_BACKTEST:
         st.markdown(
             "| 参数 | 默认值 | 含义 |"
             "\n|------|--------|------|"
-            "\n| 买入 Z-Score 阈值 | −2.0 | 当 Z-Score 低于此值时买入：股票相对商品偏低，预期向上修复 |"
+            "\n| 买入 Z-Score 阈值 | −2.0 | 当 Z-Score 低于此值时买入：股票相对历史关系偏低，预期向上修复 |"
             "\n| 卖出 Z-Score 阈值 | +2.0 | 当 Z-Score 高于此值时卖出：价差已回归或过度修复 |"
-            "\n| Z-Score 窗口 | 60 天 | 计算价差均值和标准差的回看天数，越大信号越稳但越滞后 |"
             "\n| 止损比例 | −5% | 持仓期间浮亏超过此比例时强制平仓，控制单笔最大亏损 |"
             "\n| 初始资金 | 10 万元 | 回测起始本金，用于计算资金曲线和收益率 |"
         )
@@ -582,11 +579,11 @@ with TAB_BACKTEST:
             with bt_src_col2:
                 _show_src("股票数据", stk_src_bt, stk_err_bt)
 
-            if aligned.empty or len(aligned) < zw:
-                st.error("数据不足，无法完成回测。请调整日期范围或缩短窗口。")
+            if aligned.empty or len(aligned) < 30:
+                st.error("数据不足，无法完成回测。请调整日期范围。")
             else:
-                sp = fac.spread(aligned)
-                zs = fac.rolling_zscore(sp, window=zw)
+                cr_res_bt = fac.cumret_spread_zscore(aligned)
+                zs = cr_res_bt["zscore"]
 
                 result = bt.run(
                     stock_prices=aligned["stock"],
@@ -664,32 +661,47 @@ with TAB_BACKTEST:
 
             # Price chart with trade markers
             if not trades_df.empty:
-                st.subheader("股价走势 + 买卖点")
+                st.subheader("价格走势（归一化）+ 买卖点")
                 buys = trades_df[trades_df["type"] == "买入"]
                 sells = trades_df[trades_df["type"].isin(["卖出", "止损卖出", "收盘平仓"])]
 
                 prices = result["aligned_prices"]
-                fig_trade = go.Figure()
+                # Normalize stock to 100 for the chart; map buy/sell markers to normalized scale
+                norm_base = prices.iloc[0]
+                norm_prices = prices / norm_base * 100
+                buy_norm = buys["price"] / norm_base * 100 if not buys.empty else buys["price"]
+                sell_norm = sells["price"] / norm_base * 100 if not sells.empty else sells["price"]
+
+                # Normalize commodity to 100 on secondary Y-axis
+                comm_prices_bt = aligned_bt["commodity"]
+                norm_comm_bt = comm_prices_bt / comm_prices_bt.iloc[0] * 100
+
+                fig_trade = make_subplots(specs=[[{"secondary_y": True}]])
                 fig_trade.add_trace(go.Scatter(
-                    x=prices.index, y=prices,
-                    name=selected_name_bt,
-                    line=dict(color="#2CA02C", width=1.5)
-                ))
+                    x=norm_prices.index, y=norm_prices,
+                    name=selected_name_bt, line=dict(color="#2CA02C", width=1.5)
+                ), secondary_y=False)
+                fig_trade.add_trace(go.Scatter(
+                    x=norm_comm_bt.index, y=norm_comm_bt,
+                    name=commodity_name, line=dict(color=cfg["color"], width=1.5, dash="dot"),
+                    opacity=0.7
+                ), secondary_y=True)
                 if not buys.empty:
                     fig_trade.add_trace(go.Scatter(
-                        x=buys["date"], y=buys["price"],
+                        x=buys["date"], y=buy_norm,
                         mode="markers", name="买入",
-                        marker=dict(symbol="triangle-up", size=10, color="green")
-                    ))
+                        marker=dict(symbol="triangle-up", size=11, color="green")
+                    ), secondary_y=False)
                 if not sells.empty:
                     fig_trade.add_trace(go.Scatter(
-                        x=sells["date"], y=sells["price"],
+                        x=sells["date"], y=sell_norm,
                         mode="markers", name="卖出",
-                        marker=dict(symbol="triangle-down", size=10, color="red")
-                    ))
+                        marker=dict(symbol="triangle-down", size=11, color="red")
+                    ), secondary_y=False)
+                fig_trade.update_yaxes(title_text="股价（归一化=100）", secondary_y=False)
+                fig_trade.update_yaxes(title_text=f"{commodity_name}（归一化=100）", secondary_y=True)
                 fig_trade.update_layout(
-                    yaxis_title="股价（元）",
-                    height=300, margin=dict(l=0, r=0, t=10, b=0),
+                    height=320, margin=dict(l=0, r=0, t=10, b=0),
                     legend=dict(orientation="h", y=1.1)
                 )
                 st.plotly_chart(fig_trade, use_container_width=True)
@@ -699,7 +711,7 @@ with TAB_BACKTEST:
                 display_trades = trades_df.copy()
                 display_trades["date"] = display_trades["date"].astype(str)
                 display_trades["return"] = display_trades["return"].map(lambda x: f"{x:.2%}")
-                display_trades.columns = ["日期", "类型", "价格", "收益率", "Z-Score"]
+                display_trades.columns = ["日期", "类型", "价格", "收益率", "Z-Score", "操作理由"]
                 st.dataframe(display_trades, use_container_width=True)
 
         # Add to watchlist button
@@ -712,7 +724,6 @@ with TAB_BACKTEST:
                 strategy_params={
                     "buy_threshold": st.session_state.get("bt_buy", -2.0),
                     "sell_threshold": st.session_state.get("bt_sell", 2.0),
-                    "zscore_window": st.session_state.get("bt_zw", 60),
                     "stop_loss": st.session_state.get("bt_sl", -0.05),
                 },
             )
@@ -759,7 +770,6 @@ with TAB_MONITOR:
                 code = item["stock_code"]
                 comm_sym = COMMODITY_CONFIG.get(item["commodity"], {}).get("futures_symbol", "AL0")
                 params = item.get("strategy_params", DEFAULT_STRATEGY)
-                zw = int(params.get("zscore_window", 60))
                 buy_t = float(params.get("buy_threshold", -2.0))
                 sell_t = float(params.get("sell_threshold", 2.0))
 
@@ -767,10 +777,9 @@ with TAB_MONITOR:
                     c_df, _, _ = fetch_commodity(comm_sym, DEFAULT_START, DEFAULT_END)
                     s_df, _, _ = fetch_stock(code, DEFAULT_START, DEFAULT_END)
                     aligned = fac.align(c_df, s_df)
-                    if len(aligned) >= zw:
-                        sp = fac.spread(aligned)
-                        zs = fac.rolling_zscore(sp, window=zw)
-                        current_z = float(zs.dropna().iloc[-1])
+                    if len(aligned) >= 30:
+                        cr_res_mon = fac.cumret_spread_zscore(aligned)
+                        current_z = float(cr_res_mon["zscore"].dropna().iloc[-1])
 
                         signal = None
                         if current_z < buy_t:

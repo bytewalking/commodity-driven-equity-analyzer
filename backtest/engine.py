@@ -47,7 +47,8 @@ def run(
                 cash = shares * price
                 shares = 0.0
                 position = 0
-                trades.append(_trade_record(date, "卖出", price, ret, z))
+                trades.append(_trade_record(date, "卖出", price, ret, z,
+                    f"Z-Score {z:.2f} 突破卖出阈值 {sell_threshold:.2f}，价差回归"))
                 entry_price = 0.0
 
             # --- stop-loss ---
@@ -55,7 +56,8 @@ def run(
                 cash = shares * price
                 shares = 0.0
                 position = 0
-                trades.append(_trade_record(date, "止损卖出", price, unrealized, z))
+                trades.append(_trade_record(date, "止损卖出", price, unrealized, z,
+                    f"浮亏 {unrealized:.2%}，触发止损线 {stop_loss:.2%}"))
                 entry_price = 0.0
 
         # --- entry: not on the same bar as an exit ---
@@ -65,7 +67,8 @@ def run(
             cash = 0.0
             position = 1
             entry_price = price
-            trades.append(_trade_record(date, "买入", price, 0.0, z))
+            trades.append(_trade_record(date, "买入", price, 0.0, z,
+                f"Z-Score {z:.2f} 低于买入阈值 {buy_threshold:.2f}，股票累积涨幅历史性偏低"))
 
         portfolio_values.append({"date": date, "value": cash + shares * price})
 
@@ -75,7 +78,8 @@ def run(
         last_date = aligned.index[-1]
         ret = (last_price - entry_price) / entry_price
         cash = shares * last_price
-        trades.append(_trade_record(last_date, "收盘平仓", last_price, ret, aligned["zscore"].iloc[-1]))
+        trades.append(_trade_record(last_date, "收盘平仓", last_price, ret, aligned["zscore"].iloc[-1],
+            "回测结束，强制平仓"))
         if portfolio_values:
             portfolio_values[-1]["value"] = cash
 
@@ -88,7 +92,7 @@ def run(
     portfolio["returns"] = portfolio["value"].pct_change()
 
     trades_df = pd.DataFrame(trades) if trades else pd.DataFrame(
-        columns=["date", "type", "price", "return", "zscore"]
+        columns=["date", "type", "price", "return", "zscore", "reason"]
     )
 
     return {
@@ -99,9 +103,9 @@ def run(
     }
 
 
-def _trade_record(date, t: str, price: float, ret: float, z: float) -> dict:
+def _trade_record(date, t: str, price: float, ret: float, z: float, reason: str = "") -> dict:
     return {"date": date, "type": t, "price": round(price, 4),
-            "return": round(ret, 6), "zscore": round(z, 4)}
+            "return": round(ret, 6), "zscore": round(z, 4), "reason": reason}
 
 
 def _metrics(portfolio: pd.DataFrame, trades: list, initial_capital: float) -> dict:

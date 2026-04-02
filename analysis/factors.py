@@ -125,6 +125,35 @@ def regression_analysis(aligned: pd.DataFrame) -> dict:
     }
 
 
+def cumret_spread_zscore(aligned: pd.DataFrame) -> dict:
+    """
+    Full-history cumulative-return spread Z-Score.
+
+    Steps:
+      1. Convert both series to cumulative percentage returns (base = 0% at start).
+      2. Spread = cum_comm% − cum_stock%
+      3. Z-Score = (spread − mean) / std  using full-history statistics.
+
+    Returns dict with keys: cum_comm, cum_stock, spread, zscore.
+    """
+    cum_comm = (aligned["commodity"] / aligned["commodity"].iloc[0] - 1) * 100
+    cum_stock = (aligned["stock"] / aligned["stock"].iloc[0] - 1) * 100
+    spread_series = cum_comm - cum_stock
+
+    mean_s = spread_series.mean()
+    std_s = spread_series.std()
+    zscore = (spread_series - mean_s) / std_s if std_s > 0 else pd.Series(
+        np.zeros(len(spread_series)), index=spread_series.index
+    )
+
+    return {
+        "cum_comm": cum_comm,
+        "cum_stock": cum_stock,
+        "spread": spread_series,
+        "zscore": zscore,
+    }
+
+
 def score_stock(corr: float, ann_vol: float, current_zscore: float) -> float:
     """Composite relevance score 0-100 for ranking."""
     corr_score = abs(corr) * 60
